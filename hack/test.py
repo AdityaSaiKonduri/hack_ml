@@ -1,4 +1,6 @@
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
 import proselint
 import nltk
 from nltk.corpus import stopwords
@@ -9,6 +11,49 @@ import matplotlib.pyplot as plt
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 from nltk.tokenize import word_tokenize
 from nltk import pos_tag
+
+class ConvolutionalNetwork(nn.Module):
+    def __init__(self):
+        super(ConvolutionalNetwork, self).__init__()
+
+        # More dense 1D Convolutional layers
+        self.conv_layer = nn.Sequential(
+            nn.Conv1d(in_channels=1, out_channels=64, kernel_size=3, stride=1, padding=1),  # (64, 17)
+            nn.Tanh(),
+            nn.MaxPool1d(kernel_size=2),  # (64, 8)
+
+            nn.Conv1d(64, 128, kernel_size=3, stride=1, padding=1),  # (128, 8)
+            nn.Tanh(),
+            nn.MaxPool1d(kernel_size=2),  # (128, 4)
+
+            nn.Conv1d(128, 256, kernel_size=3, stride=1, padding=1),  # (256, 4)
+            nn.Tanh(),
+            nn.MaxPool1d(kernel_size=2),  # (256, 2)
+
+            nn.Conv1d(256, 512, kernel_size=3, stride=1, padding=1),  # (512, 2)
+            nn.Tanh(),
+            nn.MaxPool1d(kernel_size=2),  # (512, 1)
+
+            nn.Conv1d(512, 1024, kernel_size=3, stride=1, padding=1),  # (1024, 1)
+            nn.Tanh(),
+        )
+
+        # Fully connected layers after the convolutional layers
+        self.fc_layer = nn.Sequential(
+            nn.Linear(1024, 512),  # Flattened input to the fully connected layer (1024 channels)
+            nn.Tanh(),
+            nn.Linear(512, 128),
+            nn.Tanh(),
+            nn.Linear(128, 2),  # Output layer for binary classification
+        )
+
+    def forward(self, x):
+        x = x.view(x.size(0), 1, 17)  # Reshape input to [batch_size, 1, 17]
+        x = self.conv_layer(x)  # Apply convolutional layers
+        x = torch.flatten(x, 1)  # Flatten the tensor before feeding it into the fully connected layers
+        x = self.fc_layer(x)  # Apply fully connected layers
+        return x
+
 
 # Load the model
 
@@ -27,36 +72,39 @@ def preprocess(title, text, subject, date):
 
     def title_length(title):
         # remove stop words and count the length of the title
+        tit_len = len(title)
         title = title.split()
         title = [word for word in title if word.lower() not in stop_words]
         # count number of chars in title without stop words
-        return [sum(len(word) for word in title), len(title)]
+        return [tit_len, len(title)]
 
 
     def text_length(text):
         # remove stop words and count the length of the text
+        tex_len = len(text)
         text = text.split()
         text = [word for word in text if word.lower() not in stop_words]
-        return [sum(len(word) for word in text), len(text)]
+        return [tex_len, len(text)]
     
     def text_sentence_count(text):
         # count number of sentences in the text
-        return len(text.split('.'))
+        # return text.fillna("").apply(lambda x: len(nltk.sent_tokenize(x)))
+        return len(nltk.sent_tokenize(text))
     
     # Step 3 : Sentiment Analysis
-    def sentiment_analyzer_scores(title):
+    def sentiment_analyzer_scores(text):
         analyser = SentimentIntensityAnalyzer()
-        score = analyser.polarity_scores(title)
+        score = analyser.polarity_scores(text)
         return [score['neg'], score['neu'], score['pos'], score['compound']]
     
     # Step 4 : Cateory ID
     def category_id(subject):
-        categories = ['politics', 'worldnews', 'News', 'politicsNews', 'worldnews']
+        categories = ['politicsNews', 'Government News', 'left-news', 'politics', 'worldnews', 'News', 'Middle-east', 'US_News']
         return categories.index(subject) + 1
     
     # Step 5 : Keyword Density
     def title_keyword_density(title):
-        headline = title
+        headline = title.strip().lower()
         tokens = word_tokenize(headline)
         tags = pos_tag(tokens)
 
@@ -72,7 +120,7 @@ def preprocess(title, text, subject, date):
         return [jj_density, vbg_density, rb_density]
 
     def text_keyword_density(text):
-        headline = text
+        headline = text.strip().lower()
         tokens = word_tokenize(headline)
         tags = pos_tag(tokens)
 
@@ -87,25 +135,45 @@ def preprocess(title, text, subject, date):
 
         return [jj_density, vbg_density, rb_density]
     
-    return [category_id(subject), *title_length(title), *text_length(text), text_sentence_count(text), *sentiment_analyzer_scores(title), check_punctuation(title), *title_keyword_density(title), *text_keyword_density(text)]
+    return [category_id(subject), *title_length(title), *text_length(text), text_sentence_count(text), *sentiment_analyzer_scores(text), check_punctuation(title), *title_keyword_density(title), *text_keyword_density(text)]
 
-model = torch.load('hack_ml/hack/model.pth', weights_only=True)
+model = torch.load('/home/vignesh-aravindh-b/hack_ml/hack/model_complete.pth', weights_only=False)
+
+model.eval()
 
 test_title = input("Enter the title of the article: ")
 test_text = input("Enter the text of the article: ")
 test_subject = input("Enter the subject of the article: ")
 test_date = input("Enter the date of the article: ")
 
-# Preprocess the input
+# Preprocess and convert input
 test_input = preprocess(test_title, test_text, test_subject, test_date)
 
-print(test_input)
+print("-------------------------------------------------------------------------------------------------------------------------------------------------------------")
+print("Tensor: ", test_input)
+print("-------------------------------------------------------------------------------------------------------------------------------------------------------------")
+print("\nThe length of the tensor: ", len(test_input))
 
-# Convert the input to a tensor
-test_input = torch.tensor(test_input).float()
 
-# Make a prediction
-output = model.predict(test_input)
-print(output)
-output = output.detach().numpy()
-print(output)
+test_input = torch.tensor(test_input).float().unsqueeze(0)
+
+
+
+with torch.no_grad():  # Disable gradients for inference
+    # Model prediction
+    outputs = model(test_input)  # Logits (raw scores)
+    probabilities = F.softmax(outputs, dim=1)  # Convert logits to probabilities
+    predictions = torch.argmax(probabilities, dim=1)  # Get predicted class index
+
+# Print results
+print("\nLogits (Raw Output):", outputs.detach().numpy())
+print("Probabilities:", probabilities.detach().numpy())
+
+class_str = ""
+
+if(predictions.item() == 0):
+    class_str = "fake"
+else:
+    class_str = "real"
+
+print("\nPredicted Class:", predictions.item(), " ->  Class : ", class_str)  # Extract integer class
